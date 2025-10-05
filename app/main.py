@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .routers import auth
+from .routers import auth, verificacion
 
 app = FastAPI(title="Sistema de Autenticación")
 
@@ -12,8 +12,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Incluir routers
 app.include_router(auth.router, prefix="/api/auth", tags=["autenticacion"])
+app.include_router(verificacion.router, prefix="/api/verificacion", tags=["verificacion"])
 
 @app.get("/")
 def read_root():

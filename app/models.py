@@ -21,3 +21,13 @@ class Usuario(Base):
     totp_habilitado = Column(Boolean, default=False)
     
     fecha_creacion = Column(DateTime, default=datetime.utcnow)
+
+class CodigoVerificacion(Base):
+    __tablename__ = "codigos_verificacion"
+
+    id = Column(Integer, primary_key=True, index=True)
+    usuario_id = Column(Integer, nullable=False)
+    codigo = Column(String(10), nullable=False)
+    tipo = Column(String(20), nullable=False)
+    expira = Column(DateTime, nullable=False)
+    fecha_creacion = Column(DateTime, default=datetime.utcnow)
