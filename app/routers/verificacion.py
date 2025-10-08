@@ -4,11 +4,15 @@ from pydantic import BaseModel
 from datetime import datetime, timedelta
 import random
 import string
+import pyotp  # 👈 Import para Google Authenticator (TOTP)
 from ..database import get_db
 from ..models import Usuario, CodigoVerificacion
 
 router = APIRouter()
 
+# ------------------------------------------------------
+# 📱 MODELO DE VERIFICACIÓN POR SMS
+# ------------------------------------------------------
 class SolicitudCodigoSMS(BaseModel):
     usuario_id: int
 
@@ -89,4 +93,64 @@ def verificar_codigo_sms(datos: VerificarCodigoSMS, db: Session = Depends(get_db
     return {
         "mensaje": "Teléfono verificado exitosamente",
         "telefono_verificado": True
+    }
+
+# ------------------------------------------------------
+# 🔐 VERIFICACIÓN POR TOTP (GOOGLE AUTHENTICATOR)
+# ------------------------------------------------------
+
+class GenerarTOTPRequest(BaseModel):
+    usuario_id: int
+
+class VerificarTOTPRequest(BaseModel):
+    usuario_id: int
+    codigo: str
+
+@router.post("/generar-totp")
+def generar_totp(datos: GenerarTOTPRequest, db: Session = Depends(get_db)):
+    """Genera un código QR para configurar Google Authenticator"""
+    usuario = db.query(Usuario).filter(Usuario.id == datos.usuario_id).first()
+    if not usuario:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    # Si el usuario no tiene secreto, se genera uno nuevo
+    if not usuario.secreto_totp:
+        usuario.secreto_totp = pyotp.random_base32()
+        db.commit()
+        db.refresh(usuario)
+
+    # Generar URI para Google Authenticator
+    totp = pyotp.TOTP(usuario.secreto_totp)
+    provisioning_uri = totp.provisioning_uri(
+        name=usuario.email,
+        issuer_name="Sistema Auth"
+    )
+
+    print(f"🧩 URI de configuración TOTP: {provisioning_uri}")
+
+    return {
+        "mensaje": "Escanea el código QR con tu app autenticadora",
+        "secreto": usuario.secreto_totp,
+        "qr_uri": provisioning_uri
+    }
+
+
+@router.post("/verificar-totp")
+def verificar_totp(datos: VerificarTOTPRequest, db: Session = Depends(get_db)):
+    """Verifica el código TOTP ingresado"""
+    usuario = db.query(Usuario).filter(Usuario.id == datos.usuario_id).first()
+    if not usuario or not usuario.secreto_totp:
+        raise HTTPException(status_code=404, detail="El usuario no tiene TOTP configurado")
+
+    totp = pyotp.TOTP(usuario.secreto_totp)
+    if not totp.verify(datos.codigo):
+        raise HTTPException(status_code=400, detail="Código TOTP incorrecto o expirado")
+
+    # Marcar TOTP como habilitado
+    usuario.totp_habilitado = True
+    db.commit()
+
+    return {
+        "mensaje": "TOTP verificado correctamente",
+        "totp_habilitado": True
     }
