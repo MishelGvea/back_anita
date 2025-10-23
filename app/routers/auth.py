@@ -1,9 +1,11 @@
 from fastapi import APIRouter, HTTPException, Depends, status
 from sqlalchemy.orm import Session
+from datetime import datetime, timedelta 
 from ..database import get_db
 from ..models import Usuario
 from ..schemas import UsuarioRegistro, UsuarioLogin, UsuarioRespuesta, Token, LoginConTOTP, LoginRespuesta
 from ..auth_utils import hash_contrasena, verificar_contrasena, crear_token, verificar_codigo_totp
+from ..models import CodigoVerificacion
 
 router = APIRouter()
 
@@ -72,6 +74,46 @@ def iniciar_sesion(datos: LoginConTOTP, db: Session = Depends(get_db)):
 
     # ✅ Credenciales correctas
 
+    # 3️⃣ ✨ Si eligió EMAIL (email_verificado = True)
+    if usuario.email_verificado:
+        if not datos.codigo_totp:
+            from .verificacion import generar_codigo
+            from .email import enviar_codigo_email
+            
+            codigo = generar_codigo()
+            enviar_codigo_email(usuario.email, codigo, usuario.nombre)
+            
+            nuevo_codigo = CodigoVerificacion(
+                usuario_id=usuario.id,
+                codigo=codigo,
+                tipo='email_login',
+                expira=datetime.utcnow() + timedelta(minutes=10)
+            )
+            db.add(nuevo_codigo)
+            db.commit()
+            
+            return LoginRespuesta(
+                mensaje=f"Código enviado a {usuario.email}",
+                requiere_totp=True
+            )
+        
+        codigo_valido = db.query(CodigoVerificacion).filter(
+            CodigoVerificacion.usuario_id == usuario.id,
+            CodigoVerificacion.codigo == datos.codigo_totp,
+            CodigoVerificacion.tipo == 'email_login',
+            CodigoVerificacion.expira > datetime.utcnow()
+        ).first()
+        
+        if not codigo_valido:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Código inválido o expirado"
+            )
+        
+        db.delete(codigo_valido)
+        db.commit()
+
+
     # 3️⃣ Verificar si tiene TOTP habilitado
     if usuario.totp_habilitado:
         # Si no envió código TOTP → solicitarlo
@@ -101,6 +143,7 @@ def iniciar_sesion(datos: LoginConTOTP, db: Session = Depends(get_db)):
             "apellidos": usuario.apellidos,
             "email": usuario.email,
             "telefono": usuario.telefono,
+            "email_verificado": usuario.email_verificado,  # ← Este campo
             "telefono_verificado": usuario.telefono_verificado,
             "totp_habilitado": usuario.totp_habilitado
         },
