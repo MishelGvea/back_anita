@@ -6,8 +6,10 @@ from ..models import Usuario
 from ..schemas import UsuarioRegistro, UsuarioLogin, UsuarioRespuesta, Token, LoginConTOTP, LoginRespuesta
 from ..auth_utils import hash_contrasena, verificar_contrasena, crear_token, verificar_codigo_totp
 from ..models import CodigoVerificacion
+from passlib.context import CryptContext
 
 router = APIRouter()
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 # ==========================================
@@ -43,18 +45,19 @@ def registrar_usuario(datos: UsuarioRegistro, db: Session = Depends(get_db)):
 
 
 # ==========================================
-# 🔑 LOGIN CON AUTENTICACIÓN 2FA (TOTP)
+# 🔑 LOGIN CON AUTENTICACIÓN 2FA (TOTP, EMAIL, PREGUNTA)
 # ==========================================
 @router.post("/login", response_model=LoginRespuesta)
 def iniciar_sesion(datos: LoginConTOTP, db: Session = Depends(get_db)):
     """
-    Iniciar sesión con soporte para autenticación de dos factores (TOTP).
+    Iniciar sesión con soporte para autenticación de dos factores.
 
     Flujo:
     1. Valida usuario y contraseña
-    2. Si tiene TOTP habilitado y no envió código → pedirlo
-    3. Si tiene TOTP habilitado y envió código → verificarlo
-    4. Si todo OK → devolver token JWT
+    2. Si tiene EMAIL verificado → pedir código
+    3. Si tiene TOTP habilitado → pedir código
+    4. Si tiene PREGUNTA configurada → pedir respuesta
+    5. Si todo OK → devolver token JWT
     """
 
     # 1️⃣ Buscar usuario
@@ -93,7 +96,7 @@ def iniciar_sesion(datos: LoginConTOTP, db: Session = Depends(get_db)):
             db.commit()
             
             return LoginRespuesta(
-                mensaje=f"Código enviado a {usuario.email}",
+                mensaje=f"📧 Código enviado a {usuario.email}",
                 requiere_totp=True
             )
         
@@ -114,12 +117,11 @@ def iniciar_sesion(datos: LoginConTOTP, db: Session = Depends(get_db)):
         db.commit()
 
 
-    # 3️⃣ Verificar si tiene TOTP habilitado
-    if usuario.totp_habilitado:
-        # Si no envió código TOTP → solicitarlo
+    # 3️⃣ Si tiene TOTP habilitado
+    elif usuario.totp_habilitado:
         if not datos.codigo_totp:
             return LoginRespuesta(
-                mensaje="Ingresa tu código de autenticación de dos factores",
+                mensaje="🔐 Ingresa tu código de autenticación de dos factores",
                 requiere_totp=True
             )
 
@@ -130,7 +132,26 @@ def iniciar_sesion(datos: LoginConTOTP, db: Session = Depends(get_db)):
                 detail="Código de autenticación inválido o expirado"
             )
 
-    # 4️⃣ Si no tiene TOTP, o ya lo validó → generar token
+    # 3️⃣ ❓ Si tiene pregunta de seguridad configurada
+    elif usuario.pregunta_seguridad and usuario.respuesta_seguridad:
+        if not datos.codigo_totp:
+            return LoginRespuesta(
+                mensaje=f"❓ {usuario.pregunta_seguridad}",
+                requiere_totp=True
+            )
+        
+        # ✅ Verificar la respuesta ingresada
+        respuesta_ingresada = datos.codigo_totp.lower().strip()
+        # Truncar a 72 bytes igual que al guardar
+        respuesta_truncada = respuesta_ingresada.encode('utf-8')[:72].decode('utf-8', errors='ignore')
+
+        if not pwd_context.verify(respuesta_truncada, usuario.respuesta_seguridad):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Respuesta incorrecta"
+            )
+
+    # 4️⃣ Si no tiene ningún método, o ya lo validó → generar token
     access_token = crear_token(data={"sub": usuario.usuario})
 
     return LoginRespuesta(
@@ -143,12 +164,13 @@ def iniciar_sesion(datos: LoginConTOTP, db: Session = Depends(get_db)):
             "apellidos": usuario.apellidos,
             "email": usuario.email,
             "telefono": usuario.telefono,
-            "email_verificado": usuario.email_verificado,  # ← Este campo
+            "email_verificado": usuario.email_verificado,
             "telefono_verificado": usuario.telefono_verificado,
-            "totp_habilitado": usuario.totp_habilitado
+            "totp_habilitado": usuario.totp_habilitado,
+            "pregunta_seguridad": usuario.pregunta_seguridad
         },
         requiere_totp=False,
-        mensaje="Login exitoso"
+        mensaje="✅ Login exitoso"
     )
 
 
